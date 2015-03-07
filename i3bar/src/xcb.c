@@ -28,9 +28,11 @@
 
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
+#include <X11/Xresource.h>
 #include <X11/extensions/XKB.h>
 
 #include "common.h"
+#include "log.h"
 #include "libi3.h"
 
 /* We save the Atoms in an easy to access array, indexed by an enum */
@@ -64,6 +66,8 @@ int bar_height;
 
 /* These are only relevant for XKB, which we only need for grabbing modifiers */
 Display *xkb_dpy;
+char *resource_manager;
+XrmDatabase string_database;
 int xkb_event_base;
 int mod_pressed = 0;
 
@@ -116,6 +120,43 @@ int _xcb_request_failed(xcb_void_cookie_t cookie, char *err_msg, int line) {
     }
     return 0;
 }
+
+/* Custom get_colorpixel that accepts Xresource colors */
+static uint32_t get_colorpixel_xres(const char *raw) {
+    char *hex;
+    ELOG("pénis %s\n", raw);
+    if (raw[0] == '!') {
+        XrmValue value;
+        char *type;
+        Bool ok;
+        ok = XrmGetResource(string_database, raw, "String", &type, &value);
+        if (ok != True) {
+            hex = strdup("#00FFFF");
+            ELOG("GET RESOURCE *NOT* OK %s\n", raw);
+        } else {
+            hex = strdup((char *) value.addr);
+            ELOG("GET RESOURCE OK: %s\n", hex);
+        }
+    } else {
+        hex = strdup(raw);
+    }
+
+    ELOG("FINALY I PARSE: %s\n", hex);
+    /* usual hex */    
+    char strgroups[3][3] = {{hex[1], hex[2], '\0'},
+                            {hex[3], hex[4], '\0'},
+                            {hex[5], hex[6], '\0'}};
+    uint8_t r = strtol(strgroups[0], NULL, 16);
+    uint8_t g = strtol(strgroups[1], NULL, 16);
+    uint8_t b = strtol(strgroups[2], NULL, 16);
+
+    free(hex);
+
+    /* We set the first 8 bits high to have 100% opacity in case of a 32 bit
+     * color depth visual. */
+    return (0xFF << 24) | (r << 16 | g << 8 | b);
+}
+
 
 /*
  * Redraws the statusline to the buffer
@@ -177,7 +218,7 @@ void refresh_statusline(void) {
         if (i3string_get_num_bytes(block->full_text) == 0)
             continue;
 
-        uint32_t colorpixel = (block->color ? get_colorpixel(block->color) : colors.bar_fg);
+        uint32_t colorpixel = (block->color ? get_colorpixel_xres(block->color) : colors.bar_fg);
         set_font_colors(statusline_ctx, colorpixel, colors.bar_bg);
         draw_text(block->full_text, statusline_pm, statusline_ctx, x + block->x_offset, 1, block->width);
         x += block->width + block->x_offset + block->x_append;
@@ -268,7 +309,7 @@ void unhide_bars(void) {
 void init_colors(const struct xcb_color_strings_t *new_colors) {
 #define PARSE_COLOR(name, def)                                                   \
     do {                                                                         \
-        colors.name = get_colorpixel(new_colors->name ? new_colors->name : def); \
+        colors.name = get_colorpixel_xres(new_colors->name ? new_colors->name : def); \
     } while (0)
     PARSE_COLOR(bar_fg, "#FFFFFF");
     PARSE_COLOR(bar_bg, "#000000");
@@ -985,6 +1026,13 @@ char *init_xcb_early() {
     conn = xcb_connection;
     DLOG("Connected to xcb\n");
 
+    xkb_dpy = XOpenDisplay(NULL);
+    resource_manager = XResourceManagerString(xkb_dpy);
+    XrmInitialize();
+    string_database = XrmGetStringDatabase(resource_manager);
+    LOG("Got resource manager\n");
+
+        /* Xresource color code */
 /* We have to request the atoms we need */
 #define ATOM_DO(name) atom_cookies[name] = xcb_intern_atom(xcb_connection, 0, strlen(#name), #name);
 #include "xcb_atoms.def"
